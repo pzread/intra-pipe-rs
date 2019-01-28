@@ -4,6 +4,9 @@ version = "0.1.0"
 authors = ["PZ Read"]
 edition = "2018"
 
+license = "MIT"
+description = "Synchronous/Asynchronous intra-process pipe"
+
 [dependencies]
 futures = "0.1"
 tokio-io = "0.1"

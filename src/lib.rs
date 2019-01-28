@@ -6,6 +6,18 @@ use futures::{sync::mpsc, Async, Poll, Sink, Stream};
 use std::io::{Error as IOError, ErrorKind, Read, Write};
 use tokio_io::{AsyncRead, AsyncWrite};
 
+pub trait WritePipe {
+    fn new(sender: mpsc::Sender<Vec<u8>>) -> Self;
+}
+
+pub trait ReadPipe {
+    fn new(receiver: mpsc::Receiver<Vec<u8>>) -> Self;
+}
+
+pub trait IsAsync {}
+
+pub trait IsSync {}
+
 pub struct AsyncWritePipe {
     sender: mpsc::Sender<Vec<u8>>,
 }
@@ -56,6 +68,14 @@ impl AsyncWrite for AsyncWritePipe {
     }
 }
 
+impl WritePipe for AsyncWritePipe {
+    fn new(sender: mpsc::Sender<Vec<u8>>) -> Self {
+        AsyncWritePipe { sender }
+    }
+}
+
+impl IsAsync for AsyncWritePipe {}
+
 pub struct SyncWritePipe {
     writer: AsyncWritePipe,
 }
@@ -71,6 +91,16 @@ impl Write for SyncWritePipe {
         tokio_current_thread::block_on_all(fut).map(|_| ())
     }
 }
+
+impl WritePipe for SyncWritePipe {
+    fn new(sender: mpsc::Sender<Vec<u8>>) -> Self {
+        SyncWritePipe {
+            writer: AsyncWritePipe::new(sender),
+        }
+    }
+}
+
+impl IsSync for SyncWritePipe {}
 
 pub struct AsyncReadPipe {
     receiver: mpsc::Receiver<Vec<u8>>,
@@ -104,6 +134,18 @@ impl Read for AsyncReadPipe {
 
 impl AsyncRead for AsyncReadPipe {}
 
+impl ReadPipe for AsyncReadPipe {
+    fn new(receiver: mpsc::Receiver<Vec<u8>>) -> Self {
+        AsyncReadPipe {
+            receiver,
+            buf: vec![],
+            pos: 0,
+        }
+    }
+}
+
+impl IsAsync for AsyncReadPipe {}
+
 pub struct SyncReadPipe {
     reader: AsyncReadPipe,
 }
@@ -115,48 +157,73 @@ impl Read for SyncReadPipe {
     }
 }
 
-pub struct WritePipeBuilder {
-    sender: mpsc::Sender<Vec<u8>>,
-}
-
-impl WritePipeBuilder {
-    pub fn into_async(self) -> AsyncWritePipe {
-        AsyncWritePipe {
-            sender: self.sender,
-        }
-    }
-
-    pub fn into_sync(self) -> SyncWritePipe {
-        SyncWritePipe {
-            writer: self.into_async(),
-        }
-    }
-}
-
-pub struct ReadPipeBuilder {
-    receiver: mpsc::Receiver<Vec<u8>>,
-}
-
-impl ReadPipeBuilder {
-    pub fn into_async(self) -> AsyncReadPipe {
-        AsyncReadPipe {
-            receiver: self.receiver,
-            buf: vec![],
-            pos: 0,
-        }
-    }
-
-    pub fn into_sync(self) -> SyncReadPipe {
+impl ReadPipe for SyncReadPipe {
+    fn new(receiver: mpsc::Receiver<Vec<u8>>) -> Self {
         SyncReadPipe {
-            reader: self.into_async(),
+            reader: AsyncReadPipe::new(receiver),
         }
     }
 }
 
-pub fn pipe() -> (WritePipeBuilder, ReadPipeBuilder) {
+impl IsSync for SyncReadPipe {}
+
+pub fn pipe<W: WritePipe, R: ReadPipe>() -> (W, R) {
     let (sender, receiver) = mpsc::channel(0);
-    (WritePipeBuilder { sender }, ReadPipeBuilder { receiver })
+    (W::new(sender), R::new(receiver))
 }
+
+pub struct Channel<R: ReadPipe, W: WritePipe> {
+    reader: R,
+    writer: W,
+}
+
+impl<R: ReadPipe + Read, W: WritePipe> Read for Channel<R, W> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, IOError> {
+        self.reader.read(buf)
+    }
+}
+
+impl<R: ReadPipe, W: Write + WritePipe> Write for Channel<R, W> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, IOError> {
+        self.writer.write(buf)
+    }
+
+    fn flush(&mut self) -> Result<(), IOError> {
+        self.writer.flush()
+    }
+}
+
+impl<R: ReadPipe + AsyncRead, W: WritePipe> AsyncRead for Channel<R, W> {}
+
+impl<R: ReadPipe, W: WritePipe + AsyncWrite> AsyncWrite for Channel<R, W> {
+    fn shutdown(&mut self) -> Poll<(), IOError> {
+        self.writer.shutdown()
+    }
+}
+
+pub fn channel<FR, FW, SR, SW>() -> (Channel<FR, FW>, Channel<SR, SW>)
+where
+    FR: ReadPipe,
+    FW: WritePipe,
+    SR: ReadPipe,
+    SW: WritePipe,
+{
+    let (fst_tx, fst_rx) = mpsc::channel(0);
+    let (snd_tx, snd_rx) = mpsc::channel(0);
+    (
+        Channel {
+            reader: FR::new(fst_rx),
+            writer: FW::new(snd_tx),
+        },
+        Channel {
+            reader: SR::new(snd_rx),
+            writer: SW::new(fst_tx),
+        },
+    )
+}
+
+pub type AsyncChannel = Channel<AsyncReadPipe, AsyncWritePipe>;
+pub type SyncChannel = Channel<SyncReadPipe, SyncWritePipe>;
 
 #[cfg(test)]
 mod tests {
@@ -168,9 +235,8 @@ mod tests {
     const TEST_WRITE_DATA_B: &[u8] = b"World";
     const TEST_EXPECT_DATA: &[u8] = b"Hello World";
 
-    fn sync_sender(tx: WritePipeBuilder) -> thread::JoinHandle<()> {
+    fn sync_sender(mut tx: SyncWritePipe) -> thread::JoinHandle<()> {
         thread::spawn(move || {
-            let mut tx = tx.into_sync();
             assert_eq!(
                 tx.write(TEST_WRITE_DATA_A).unwrap(),
                 TEST_WRITE_DATA_A.len()
@@ -182,17 +248,15 @@ mod tests {
         })
     }
 
-    fn sync_receiver(rx: ReadPipeBuilder) -> thread::JoinHandle<()> {
+    fn sync_receiver(mut rx: SyncReadPipe) -> thread::JoinHandle<()> {
         thread::spawn(move || {
-            let mut rx = rx.into_sync();
             let mut buf = Vec::new();
             rx.read_to_end(&mut buf).unwrap();
             assert_eq!(buf, TEST_EXPECT_DATA);
         })
     }
 
-    fn async_sender(tx: WritePipeBuilder) -> impl Future<Item = (), Error = ()> {
-        let tx = tx.into_async();
+    fn async_sender(tx: AsyncWritePipe) -> impl Future<Item = (), Error = ()> {
         tokio_io::io::write_all(tx, TEST_WRITE_DATA_A)
             .and_then(|(tx, _)| tokio_io::io::write_all(tx, TEST_WRITE_DATA_B))
             .then(|result| {
@@ -201,8 +265,7 @@ mod tests {
             })
     }
 
-    fn async_receiver(rx: ReadPipeBuilder) -> impl Future<Item = (), Error = ()> {
-        let rx = rx.into_async();
+    fn async_receiver(rx: AsyncReadPipe) -> impl Future<Item = (), Error = ()> {
         tokio_io::io::read_to_end(rx, Vec::new()).then(|result| {
             let (_, buf) = result.unwrap();
             assert_eq!(buf, TEST_EXPECT_DATA);
@@ -210,34 +273,114 @@ mod tests {
         })
     }
 
+    fn run_and_wait(
+        thds: Vec<thread::JoinHandle<()>>,
+        futs: Vec<Box<dyn Future<Item = (), Error = ()>>>,
+    ) {
+        tokio_current_thread::block_on_all(future::lazy(|| {
+            for fut in futs {
+                tokio_current_thread::spawn(fut);
+            }
+            future::ok::<(), ()>(())
+        }))
+        .unwrap();
+        for thd in thds {
+            thd.join().unwrap();
+        }
+    }
+
     #[test]
     fn normal_pipe() {
-        for &sync_tx in &[true, false] {
-            for &sync_rx in &[true, false] {
-                let mut thds = Vec::new();
-                let mut futs: Vec<Box<dyn Future<Item = (), Error = ()>>> = Vec::new();
-                let (tx, rx) = pipe();
-                if sync_tx {
-                    thds.push(sync_sender(tx));
-                } else {
-                    futs.push(Box::new(async_sender(tx)));
-                }
-                if sync_rx {
-                    thds.push(sync_receiver(rx));
-                } else {
-                    futs.push(Box::new(async_receiver(rx)));
-                }
-                tokio_current_thread::block_on_all(future::lazy(|| {
-                    for fut in futs {
-                        tokio_current_thread::spawn(fut);
-                    }
-                    future::ok::<(), ()>(())
-                }))
-                .unwrap();
-                for thd in thds {
-                    thd.join().unwrap();
-                }
+        let (tx, rx) = pipe();
+        run_and_wait(vec![sync_sender(tx), sync_receiver(rx)], vec![]);
+        let (tx, rx) = pipe();
+        run_and_wait(vec![sync_sender(tx)], vec![Box::new(async_receiver(rx))]);
+        let (tx, rx) = pipe();
+        run_and_wait(vec![sync_receiver(rx)], vec![Box::new(async_sender(tx))]);
+        let (tx, rx) = pipe();
+        run_and_wait(
+            vec![],
+            vec![Box::new(async_sender(tx)), Box::new(async_receiver(rx))],
+        );
+    }
+
+    fn sync_send_receive(ch: SyncChannel, reverse: bool) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            let send = |mut ch: SyncChannel| {
+                assert_eq!(
+                    ch.write(TEST_WRITE_DATA_A).unwrap(),
+                    TEST_WRITE_DATA_A.len()
+                );
+                assert_eq!(
+                    ch.write(TEST_WRITE_DATA_B).unwrap(),
+                    TEST_WRITE_DATA_B.len()
+                );
+                ch
+            };
+            let receive = |mut ch: SyncChannel| {
+                let mut buf = vec![0u8; TEST_EXPECT_DATA.len()];
+                ch.read_exact(&mut buf).unwrap();
+                assert_eq!(buf, TEST_EXPECT_DATA);
+                ch
+            };
+            if reverse {
+                let ch = receive(ch);
+                send(ch);
+            } else {
+                let ch = send(ch);
+                receive(ch);
             }
+        })
+    }
+
+    fn async_send_receive(ch: AsyncChannel, reverse: bool) -> Box<Future<Item = (), Error = ()>> {
+        let send = |tx| {
+            tokio_io::io::write_all(tx, TEST_WRITE_DATA_A)
+                .and_then(|(tx, _)| tokio_io::io::write_all(tx, TEST_WRITE_DATA_B))
+                .then(|result| {
+                    let (tx, _) = result.unwrap();
+                    Ok(tx)
+                })
+        };
+        let receive = |rx| {
+            let buf = vec![0u8; TEST_EXPECT_DATA.len()];
+            tokio_io::io::read_exact(rx, buf).then(|result| {
+                let (rx, buf) = result.unwrap();
+                assert_eq!(buf, TEST_EXPECT_DATA);
+                Ok(rx)
+            })
+        };
+        if reverse {
+            Box::new(receive(ch).and_then(move |ch| send(ch)).map(|_| ()))
+        } else {
+            Box::new(send(ch).and_then(move |ch| receive(ch)).map(|_| ()))
         }
+    }
+
+    #[test]
+    fn normal_channel() {
+        let (fst, snd) = channel();
+        run_and_wait(
+            vec![sync_send_receive(fst, false), sync_send_receive(snd, true)],
+            vec![],
+        );
+        let (fst, snd) = channel();
+        run_and_wait(
+            vec![sync_send_receive(fst, false)],
+            vec![async_send_receive(snd, true)],
+        );
+        let (fst, snd) = channel();
+        run_and_wait(
+            vec![sync_send_receive(snd, false)],
+            vec![async_send_receive(fst, true)],
+        );
+        let (fst, snd) = channel();
+        run_and_wait(
+            vec![],
+            vec![
+                async_send_receive(fst, false),
+                async_send_receive(snd, true),
+            ],
+        );
     }
 }
