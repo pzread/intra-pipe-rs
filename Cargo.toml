@@ -6,6 +6,7 @@ edition = "2018"
 
 license = "MIT"
 description = "Synchronous/Asynchronous intra-process pipe"
+repository = "https://github.com/pzread/intra-pipe-rs"
 
 [dependencies]
 futures = "0.1"
