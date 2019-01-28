@@ -154,25 +154,23 @@ impl ReadPipeBuilder {
 }
 
 pub fn pipe() -> (WritePipeBuilder, ReadPipeBuilder) {
-    let (sender, receiver) = mpsc::channel(1);
+    let (sender, receiver) = mpsc::channel(0);
     (WritePipeBuilder { sender }, ReadPipeBuilder { receiver })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::{future, Future};
     use std::thread;
 
     const TEST_WRITE_DATA_A: &[u8] = b"Hello ";
     const TEST_WRITE_DATA_B: &[u8] = b"World";
     const TEST_EXPECT_DATA: &[u8] = b"Hello World";
 
-    #[test]
-    fn sync() {
-        let (tx, rx) = pipe();
-        let mut tx = tx.into_sync();
-        let mut rx = rx.into_sync();
+    fn sync_sender(tx: WritePipeBuilder) -> thread::JoinHandle<()> {
         thread::spawn(move || {
+            let mut tx = tx.into_sync();
             assert_eq!(
                 tx.write(TEST_WRITE_DATA_A).unwrap(),
                 TEST_WRITE_DATA_A.len()
@@ -181,9 +179,65 @@ mod tests {
                 tx.write(TEST_WRITE_DATA_B).unwrap(),
                 TEST_WRITE_DATA_B.len()
             );
-        });
-        let mut buf = Vec::new();
-        rx.read_to_end(&mut buf).unwrap();
-        assert_eq!(buf, TEST_EXPECT_DATA);
+        })
+    }
+
+    fn sync_receiver(rx: ReadPipeBuilder) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            let mut rx = rx.into_sync();
+            let mut buf = Vec::new();
+            rx.read_to_end(&mut buf).unwrap();
+            assert_eq!(buf, TEST_EXPECT_DATA);
+        })
+    }
+
+    fn async_sender(tx: WritePipeBuilder) -> impl Future<Item = (), Error = ()> {
+        let tx = tx.into_async();
+        tokio_io::io::write_all(tx, TEST_WRITE_DATA_A)
+            .and_then(|(tx, _)| tokio_io::io::write_all(tx, TEST_WRITE_DATA_B))
+            .then(|result| {
+                assert!(result.is_ok());
+                Ok(())
+            })
+    }
+
+    fn async_receiver(rx: ReadPipeBuilder) -> impl Future<Item = (), Error = ()> {
+        let rx = rx.into_async();
+        tokio_io::io::read_to_end(rx, Vec::new()).then(|result| {
+            let (_, buf) = result.unwrap();
+            assert_eq!(buf, TEST_EXPECT_DATA);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn normal_pipe() {
+        for &sync_tx in &[true, false] {
+            for &sync_rx in &[true, false] {
+                let mut thds = Vec::new();
+                let mut futs: Vec<Box<dyn Future<Item = (), Error = ()>>> = Vec::new();
+                let (tx, rx) = pipe();
+                if sync_tx {
+                    thds.push(sync_sender(tx));
+                } else {
+                    futs.push(Box::new(async_sender(tx)));
+                }
+                if sync_rx {
+                    thds.push(sync_receiver(rx));
+                } else {
+                    futs.push(Box::new(async_receiver(rx)));
+                }
+                tokio_current_thread::block_on_all(future::lazy(|| {
+                    for fut in futs {
+                        tokio_current_thread::spawn(fut);
+                    }
+                    future::ok::<(), ()>(())
+                }))
+                .unwrap();
+                for thd in thds {
+                    thd.join().unwrap();
+                }
+            }
+        }
     }
 }
