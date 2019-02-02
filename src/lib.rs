@@ -18,6 +18,7 @@ pub trait IsAsync {}
 
 pub trait IsSync {}
 
+#[derive(Debug)]
 pub struct AsyncWritePipe {
     sender: mpsc::Sender<Vec<u8>>,
 }
@@ -76,6 +77,7 @@ impl WritePipe for AsyncWritePipe {
 
 impl IsAsync for AsyncWritePipe {}
 
+#[derive(Debug)]
 pub struct SyncWritePipe {
     writer: AsyncWritePipe,
 }
@@ -102,6 +104,7 @@ impl WritePipe for SyncWritePipe {
 
 impl IsSync for SyncWritePipe {}
 
+#[derive(Debug)]
 pub struct AsyncReadPipe {
     receiver: mpsc::Receiver<Vec<u8>>,
     buf: Vec<u8>,
@@ -146,6 +149,7 @@ impl ReadPipe for AsyncReadPipe {
 
 impl IsAsync for AsyncReadPipe {}
 
+#[derive(Debug)]
 pub struct SyncReadPipe {
     reader: AsyncReadPipe,
 }
@@ -172,6 +176,7 @@ pub fn pipe<W: WritePipe, R: ReadPipe>() -> (W, R) {
     (W::new(sender), R::new(receiver))
 }
 
+#[derive(Debug)]
 pub struct Channel<R: ReadPipe, W: WritePipe> {
     reader: R,
     writer: W,
