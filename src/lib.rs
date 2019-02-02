@@ -336,6 +336,15 @@ mod tests {
         assert_eq!(tx.flush().unwrap(), ());
     }
 
+    #[test]
+    fn shutdown_pipe() {
+        let (mut tx, mut _rx): (AsyncWritePipe, AsyncReadPipe) = pipe();
+        assert_eq!(
+            tokio_current_thread::block_on_all(future::poll_fn(|| tx.shutdown())).unwrap(),
+            ()
+        );
+    }
+
     fn sync_send_receive(ch: SyncChannel, reverse: bool) -> thread::JoinHandle<()> {
         thread::spawn(move || {
             let send = |mut ch: SyncChannel| {
