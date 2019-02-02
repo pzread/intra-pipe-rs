@@ -305,11 +305,14 @@ mod tests {
     }
 
     #[test]
-    fn zero_read_write() {
+    fn zero_read_write_pipe() {
         let (mut tx, mut rx): (SyncWritePipe, SyncReadPipe) = pipe();
         assert_eq!(tx.write(&[]).unwrap(), 0);
         let mut buf = [0u8; 0];
         assert_eq!(rx.read(&mut buf).unwrap(), 0);
+
+        let (mut tx, mut _rx): (AsyncWritePipe, AsyncReadPipe) = pipe();
+        assert_eq!(tx.write(&[]).unwrap(), 0);
     }
 
     #[test]
@@ -325,6 +328,12 @@ mod tests {
         drop(tx);
         let mut buf = [0u8; 1];
         assert_eq!(rx.read(&mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn flush_pipe() {
+        let (mut tx, mut _rx): (SyncWritePipe, SyncReadPipe) = pipe();
+        assert_eq!(tx.flush().unwrap(), ());
     }
 
     fn sync_send_receive(ch: SyncChannel, reverse: bool) -> thread::JoinHandle<()> {
