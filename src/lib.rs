@@ -304,6 +304,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn zero_read_write() {
+        let (mut tx, mut rx): (SyncWritePipe, SyncReadPipe) = pipe();
+        assert_eq!(tx.write(&[]).unwrap(), 0);
+        let mut buf = [0u8; 0];
+        assert_eq!(rx.read(&mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn broken_pipe() {
+        let (mut tx, rx): (SyncWritePipe, SyncReadPipe) = pipe();
+        drop(rx);
+        assert_eq!(tx.write(&[]).unwrap(), 0);
+        assert_eq!(
+            tx.write(&TEST_EXPECT_DATA).err().unwrap().kind(),
+            ErrorKind::WriteZero
+        );
+        let (tx, mut rx): (SyncWritePipe, SyncReadPipe) = pipe();
+        drop(tx);
+        let mut buf = [0u8; 1];
+        assert_eq!(rx.read(&mut buf).unwrap(), 0);
+    }
+
     fn sync_send_receive(ch: SyncChannel, reverse: bool) -> thread::JoinHandle<()> {
         thread::spawn(move || {
             let send = |mut ch: SyncChannel| {
