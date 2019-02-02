@@ -336,15 +336,6 @@ mod tests {
         assert_eq!(tx.flush().unwrap(), ());
     }
 
-    #[test]
-    fn shutdown_pipe() {
-        let (mut tx, mut _rx): (AsyncWritePipe, AsyncReadPipe) = pipe();
-        assert_eq!(
-            tokio_current_thread::block_on_all(future::poll_fn(|| tx.shutdown())).unwrap(),
-            ()
-        );
-    }
-
     fn sync_send_receive(ch: SyncChannel, reverse: bool) -> thread::JoinHandle<()> {
         thread::spawn(move || {
             let send = |mut ch: SyncChannel| {
@@ -422,6 +413,21 @@ mod tests {
                 async_send_receive(fst, false),
                 async_send_receive(snd, true),
             ],
+        );
+    }
+
+    #[test]
+    fn shutdown() {
+        let (mut tx, mut _rx): (AsyncWritePipe, AsyncReadPipe) = pipe();
+        assert_eq!(
+            tokio_current_thread::block_on_all(future::poll_fn(|| tx.shutdown())).unwrap(),
+            ()
+        );
+
+        let (mut fst, mut _snd): (AsyncChannel, AsyncChannel) = channel();
+        assert_eq!(
+            tokio_current_thread::block_on_all(future::poll_fn(|| fst.shutdown())).unwrap(),
+            ()
         );
     }
 }
