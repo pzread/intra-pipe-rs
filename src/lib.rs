@@ -230,6 +230,7 @@ mod tests {
     use super::*;
     use futures::{future, Future};
     use std::thread;
+    use tokio_io::io::{read_exact, read_to_end, write_all};
 
     const TEST_WRITE_DATA_A: &[u8] = b"Hello ";
     const TEST_WRITE_DATA_B: &[u8] = b"World";
@@ -257,8 +258,8 @@ mod tests {
     }
 
     fn async_sender(tx: AsyncWritePipe) -> impl Future<Item = (), Error = ()> {
-        tokio_io::io::write_all(tx, TEST_WRITE_DATA_A)
-            .and_then(|(tx, _)| tokio_io::io::write_all(tx, TEST_WRITE_DATA_B))
+        write_all(tx, TEST_WRITE_DATA_A)
+            .and_then(|(tx, _)| write_all(tx, TEST_WRITE_DATA_B))
             .then(|result| {
                 assert!(result.is_ok());
                 Ok(())
@@ -266,7 +267,7 @@ mod tests {
     }
 
     fn async_receiver(rx: AsyncReadPipe) -> impl Future<Item = (), Error = ()> {
-        tokio_io::io::read_to_end(rx, Vec::new()).then(|result| {
+        read_to_end(rx, Vec::new()).then(|result| {
             let (_, buf) = result.unwrap();
             assert_eq!(buf, TEST_EXPECT_DATA);
             Ok(())
@@ -367,8 +368,8 @@ mod tests {
 
     fn async_send_receive(ch: AsyncChannel, reverse: bool) -> Box<Future<Item = (), Error = ()>> {
         let send = |tx| {
-            tokio_io::io::write_all(tx, TEST_WRITE_DATA_A)
-                .and_then(|(tx, _)| tokio_io::io::write_all(tx, TEST_WRITE_DATA_B))
+            write_all(tx, TEST_WRITE_DATA_A)
+                .and_then(|(tx, _)| write_all(tx, TEST_WRITE_DATA_B))
                 .then(|result| {
                     let (tx, _) = result.unwrap();
                     Ok(tx)
@@ -376,7 +377,7 @@ mod tests {
         };
         let receive = |rx| {
             let buf = vec![0u8; TEST_EXPECT_DATA.len()];
-            tokio_io::io::read_exact(rx, buf).then(|result| {
+            read_exact(rx, buf).then(|result| {
                 let (rx, buf) = result.unwrap();
                 assert_eq!(buf, TEST_EXPECT_DATA);
                 Ok(rx)
