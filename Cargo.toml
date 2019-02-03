@@ -1,6 +1,6 @@
 [package]
 name = "intra-pipe"
-version = "0.1.3"
+version = "0.1.4"
 authors = ["PZ Read"]
 edition = "2018"
 
