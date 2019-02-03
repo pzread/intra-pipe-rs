@@ -23,14 +23,6 @@ pub struct AsyncWritePipe {
     sender: mpsc::Sender<Vec<u8>>,
 }
 
-impl AsyncWritePipe {
-    fn inner_flush(&mut self) -> Poll<(), IOError> {
-        self.sender
-            .poll_complete()
-            .map_err(|err| IOError::new(ErrorKind::BrokenPipe, err))
-    }
-}
-
 impl Write for AsyncWritePipe {
     fn write(&mut self, buf: &[u8]) -> Result<usize, IOError> {
         if self.sender.is_closed() {
@@ -47,25 +39,28 @@ impl Write for AsyncWritePipe {
                 if ret.is_not_ready() {
                     Err(IOError::new(ErrorKind::WouldBlock, ""))
                 } else {
-                    Ok(len)
+                    Ok(())
                 }
+            })
+            .and_then(|_| {
+                self.sender
+                    .poll_complete()
+                    .map_err(|err| IOError::new(ErrorKind::BrokenPipe, err))
+                    .map(|_| len)
             })
     }
 
     fn flush(&mut self) -> Result<(), IOError> {
-        self.inner_flush().and_then(|ret| {
-            if ret.is_not_ready() {
-                Err(IOError::new(ErrorKind::WouldBlock, ""))
-            } else {
-                Ok(())
-            }
-        })
+        // Fake flush since data is always flushed after write.
+        Ok(())
     }
 }
 
 impl AsyncWrite for AsyncWritePipe {
     fn shutdown(&mut self) -> Poll<(), IOError> {
-        self.inner_flush()
+        self.sender
+            .close()
+            .map_err(|err| IOError::new(ErrorKind::BrokenPipe, err))
     }
 }
 
@@ -172,7 +167,7 @@ impl ReadPipe for SyncReadPipe {
 impl IsSync for SyncReadPipe {}
 
 pub fn pipe<W: WritePipe, R: ReadPipe>() -> (W, R) {
-    let (sender, receiver) = mpsc::channel(0);
+    let (sender, receiver) = mpsc::channel(1);
     (W::new(sender), R::new(receiver))
 }
 
@@ -213,8 +208,8 @@ where
     SR: ReadPipe,
     SW: WritePipe,
 {
-    let (fst_tx, fst_rx) = mpsc::channel(0);
-    let (snd_tx, snd_rx) = mpsc::channel(0);
+    let (fst_tx, fst_rx) = mpsc::channel(1);
+    let (snd_tx, snd_rx) = mpsc::channel(1);
     (
         Channel {
             reader: FR::new(fst_rx),
